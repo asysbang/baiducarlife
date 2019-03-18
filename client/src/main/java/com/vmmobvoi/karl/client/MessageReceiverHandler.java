@@ -7,6 +7,7 @@ import com.ebo.carlife.protobuf.CarlifeVideoEncoderInfoProto;
 import com.google.protobuf.InvalidProtocolBufferException;
 
 import java.text.MessageFormat;
+import java.util.Arrays;
 
 public class MessageReceiverHandler {
 
@@ -38,11 +39,15 @@ public class MessageReceiverHandler {
             Log.e("", "=========MSG_CMD_STATISTIC_INFO= ");
         } else if (CommonParams.MSG_CMD_HU_INFO == cmdServiceType) {//00018003
             Log.e("", "=========MSG_CMD_HU_INFO= ");
+            //收到hu信息 ，返回MD信息
+            return CommonParams.MSG_CMD_MD_INFO;
         } else if (CommonParams.MSG_CMD_MODULE_CONTROL == cmdServiceType) {//00018028
             Log.e("", "=========MSG_CMD_MODULE_CONTROL= ");
+
             //MSG_CMD_MODULE_STATUS  应该回复的类型
+            return CommonParams.MSG_CMD_MODULE_STATUS;
         } else if (CommonParams.MSG_CMD_VIDEO_ENCODER_INIT == cmdServiceType) {//00018007
-//            Log.e("", "=========MSG_CMD_VIDEO_ENCODER_INIT = cmd =  "+Arrays.toString(cmd));
+            Log.e("", "=========MSG_CMD_VIDEO_ENCODER_INIT = cmd =  "+Arrays.toString(cmd));
             //CarlifeVideoEncoderInfo: getData  = [8, -128, 16, 16, -128, 12, 24, 30]
             //CarlifeVideoEncoderInfo: getData length  = 8
             //MSG_CMD_VIDEO_ENCODER_INIT = cmd =  [0, 8, 0, 0, 0, 1, -128, 7, 8, -128, 16, 16, -128, 12, 24, 30]

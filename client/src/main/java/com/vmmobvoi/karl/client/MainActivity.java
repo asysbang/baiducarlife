@@ -49,6 +49,7 @@ import java.text.MessageFormat;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity implements View.OnClickListener {
 
@@ -109,6 +110,17 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
                 case CommonParams.MSG_CMD_VIDEO_ENCODER_INIT_DONE:
                     MessageSendHandler.replayVideoEncoderInitDone(outputStream);
+                    CaptureThread c = new CaptureThread();
+                    c.start();
+                    break;
+
+                case CommonParams.MSG_CMD_MD_INFO:
+                    MessageSendHandler.replayMDInfo(outputStream);
+                    break;
+
+
+                case CommonParams.MSG_CMD_MODULE_STATUS:
+                    MessageSendHandler.replayModuleStatus(outputStream);
                     break;
 
             }
@@ -210,7 +222,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         int cmd = CommonParams.MSG_CMD_PROTOCOL_VERSION_MATCH_STATUS;
         ByteConvert.intToBytes(cmd, test, 0);
         mInfo.append("onCreate test = " + Arrays.toString(test) + "\n");
-
+        startCapture();
     }
 
 
@@ -222,12 +234,154 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     private static final int REQUEST_CAPTURE_CODE = 0x00003200;
 
+
+    private MediaCodec encoder;
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        if (222 == requestCode && RESULT_OK == resultCode) {
+            Log.e("", "======onActivityResult");
+            MediaFormat mediaFormat = MediaFormat.createVideoFormat("video/avc", 1280, 720);
+
+            mediaFormat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            mediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, 720 * 1280 * 5);
+            mediaFormat.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
+            mediaFormat.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
+            Log.e("", "======onActivityResult111111");
+
+            try {
+                encoder = MediaCodec.createEncoderByType("video/avc");
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            encoder.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            MediaProjection projection = manager.getMediaProjection(resultCode, data);
+            projection.createVirtualDisplay("aaaaaa", 1280, 720, 360, DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC, encoder.createInputSurface(), null, null);
+            encoder.start();
+
+            Log.e("", "======onActivityResult222222");
+        }
+    }
+
+    private MediaCodec.BufferInfo mBufferInfo = new MediaCodec.BufferInfo();
+    private AtomicBoolean mIsQuit = new AtomicBoolean(false);
+
+
+    private void writeHeadForBaidu(int msgLength) {
+
+        try {
+            byte[] head = new byte[8];
+            int cmd = 2;
+            intToBytes(cmd, head, 0);
+            intToBytes(msgLength, head, 4);
+            outputStream.write(head);
+            outputStream.flush();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
 
     }
 
 
+    /**
+     * 因为usb传输在9.0之前的最大长度是16384,所以需要做分段传输
+     */
+    private final int MAX_SIZE = 16384;
+
+    private void maxSizeWrite(OutputStream bos, byte[] bytes) throws IOException {
+        int count = bytes.length / MAX_SIZE;
+        int i;
+        for (i = 0; i < count; i++) {
+            bos.write(bytes, i * MAX_SIZE, MAX_SIZE);
+        }
+        bos.write(bytes, i * MAX_SIZE, bytes.length - (i * MAX_SIZE));
+    }
+
+    public byte[] configbyte;
+
+    private class CaptureThread extends Thread {
+        @Override
+        public void run() {
+            Log.e("", "======CaptureThread");
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            while (!mIsQuit.get()) {
+                Log.e("", "======CaptureThread");
+                int outputBufferIndex = encoder.dequeueOutputBuffer(mBufferInfo, 10000);
+                try {
+
+                    while (outputBufferIndex >= 0) {
+                        Log.e("", "======>>> AOAModeClient mBufferInfo = " + mBufferInfo.size);
+                        ByteBuffer outputBuffer = encoder.getOutputBuffer(outputBufferIndex);
+                        byte[] outData = new byte[mBufferInfo.size];
+                        outputBuffer.get(outData);
+
+                        if (mBufferInfo.flags == 2) {
+                            Log.e("", "======flags2222");
+                            configbyte = new byte[mBufferInfo.size];
+//                            configbyte = new byte[mBufferInfo.size];
+                            configbyte = outData;
+
+                        } else if (mBufferInfo.flags == 1) {
+                            writeHeadForBaidu(mBufferInfo.size+8+configbyte.length);
+//                            Log.e("", "======flags1111");
+
+                            byte[] head = new byte[8];
+
+                            int cmd = 2;
+                            intToBytes(cmd, head, 4);
+                            intToBytes(mBufferInfo.size+configbyte.length, head, 0);
+
+
+                            byte[] keyframe = new byte[mBufferInfo.size+8+configbyte.length];
+
+                            System.arraycopy(head, 0, keyframe, 0, head.length);
+                            System.arraycopy(configbyte, 0, keyframe, head.length, configbyte.length);
+                            System.arraycopy(outData, 0, keyframe, head.length+configbyte.length, outData.length);
+
+
+//                            byte[] keyframe = new byte[mBufferInfo.size ];
+//                            System.arraycopy(outData, 0, keyframe, 0, outData.length);
+                            maxSizeWrite(outputStream, keyframe);
+                            outputStream.flush();
+                        } else {
+                            writeHeadForBaidu(mBufferInfo.size+8);
+                            Log.e("", "======flags00000");
+                            byte[] head = new byte[8];
+                            int cmd = 2;
+                            intToBytes(cmd, head, 4);
+                            intToBytes(mBufferInfo.size, head, 0);
+
+                            byte[] newframe = new byte[mBufferInfo.size+8];
+                            System.arraycopy(head, 0, newframe, 0, head.length);
+                            System.arraycopy(outData, 0, newframe, head.length, outData.length);
+
+                            maxSizeWrite(outputStream, newframe);
+
+//                            maxSizeWrite(outputStream, outData);
+                            outputStream.flush();
+                        }
+
+                        encoder.releaseOutputBuffer(outputBufferIndex, false);
+
+                        //!!!!!!下面一行必须调用
+                        outputBufferIndex = encoder.dequeueOutputBuffer(mBufferInfo, 10000);
+                    }
+
+
+                } catch (Exception e) {
+
+                }
+
+
+            }
+
+        }
+    }
 
 
     @Override
@@ -244,7 +398,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     }
 
     private void startCapture() {
-
+        MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        Intent captureIntent = manager.createScreenCaptureIntent();
+        startActivityForResult(captureIntent, 222);
     }
 
 }
