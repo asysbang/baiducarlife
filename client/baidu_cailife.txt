@@ -1,0 +1,6 @@
+baidu carlife
+
+流程
+1.监听usb连接之后开启aoa模式
+
+2.发送sendProtocolMatchStatus  匹配协议的版本号
