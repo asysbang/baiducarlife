@@ -110,7 +110,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
                 case CommonParams.MSG_CMD_VIDEO_ENCODER_INIT_DONE:
                     MessageSendHandler.replayVideoEncoderInitDone(outputStream);
-                    CaptureThread c = new CaptureThread();
+                    CaptureForBaiduThread c = new CaptureForBaiduThread();
                     c.start();
                     break;
 
@@ -309,6 +309,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
+            byte[] OVER = "OVER".getBytes();
             while (!mIsQuit.get()) {
                 Log.e("", "======CaptureThread");
                 int outputBufferIndex = encoder.dequeueOutputBuffer(mBufferInfo, 10000);
@@ -319,50 +320,22 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                         ByteBuffer outputBuffer = encoder.getOutputBuffer(outputBufferIndex);
                         byte[] outData = new byte[mBufferInfo.size];
                         outputBuffer.get(outData);
-
                         if (mBufferInfo.flags == 2) {
                             Log.e("", "======flags2222");
                             configbyte = new byte[mBufferInfo.size];
-//                            configbyte = new byte[mBufferInfo.size];
                             configbyte = outData;
-
                         } else if (mBufferInfo.flags == 1) {
-                            writeHeadForBaidu(mBufferInfo.size+8+configbyte.length);
-//                            Log.e("", "======flags1111");
-
-                            byte[] head = new byte[8];
-
-                            int cmd = 2;
-                            intToBytes(cmd, head, 4);
-                            intToBytes(mBufferInfo.size+configbyte.length, head, 0);
-
-
-                            byte[] keyframe = new byte[mBufferInfo.size+8+configbyte.length];
-
-                            System.arraycopy(head, 0, keyframe, 0, head.length);
-                            System.arraycopy(configbyte, 0, keyframe, head.length, configbyte.length);
-                            System.arraycopy(outData, 0, keyframe, head.length+configbyte.length, outData.length);
-
-
-//                            byte[] keyframe = new byte[mBufferInfo.size ];
-//                            System.arraycopy(outData, 0, keyframe, 0, outData.length);
+                            Log.e("", "======flags0000");
+                            byte[] keyframe = new byte[mBufferInfo.size + configbyte.length];
+                            System.arraycopy(configbyte, 0, keyframe, 0, configbyte.length);
+                            System.arraycopy(outData, 0, keyframe, configbyte.length, outData.length);
                             maxSizeWrite(outputStream, keyframe);
+                            outputStream.write(OVER, 0, OVER.length);
                             outputStream.flush();
                         } else {
-                            writeHeadForBaidu(mBufferInfo.size+8);
                             Log.e("", "======flags00000");
-                            byte[] head = new byte[8];
-                            int cmd = 2;
-                            intToBytes(cmd, head, 4);
-                            intToBytes(mBufferInfo.size, head, 0);
-
-                            byte[] newframe = new byte[mBufferInfo.size+8];
-                            System.arraycopy(head, 0, newframe, 0, head.length);
-                            System.arraycopy(outData, 0, newframe, head.length, outData.length);
-
-                            maxSizeWrite(outputStream, newframe);
-
-//                            maxSizeWrite(outputStream, outData);
+                            maxSizeWrite(outputStream, outData);
+                            outputStream.write(OVER, 0, OVER.length);
                             outputStream.flush();
                         }
 
@@ -389,7 +362,8 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         int id = v.getId();
         switch (id) {
             case R.id.clear:
-                mInfo.setText("");
+                CaptureThread c = new CaptureThread();
+                c.start();
                 break;
             case R.id.capture:
                 startCapture();
@@ -401,6 +375,140 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
         Intent captureIntent = manager.createScreenCaptureIntent();
         startActivityForResult(captureIntent, 222);
+    }
+
+
+    private class CaptureForBaiduThread extends Thread {
+        @Override
+        public void run() {
+            Log.e("", "======CaptureThread");
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            boolean isFirst = true;
+            while (!mIsQuit.get()) {
+                Log.e("", "======CaptureThread");
+                int outputBufferIndex = encoder.dequeueOutputBuffer(mBufferInfo, 10000);
+                try {
+
+                    while (outputBufferIndex >= 0) {
+                        Log.e("", "======>>> AOAModeClient mBufferInfo = " + mBufferInfo.size);
+                        ByteBuffer outputBuffer = encoder.getOutputBuffer(outputBufferIndex);
+                        byte[] outData = new byte[mBufferInfo.size];
+                        outputBuffer.get(outData);
+
+                        if (mBufferInfo.flags == 2) {
+                            Log.e("", "======flags2222");
+                            configbyte = new byte[mBufferInfo.size];
+//                            configbyte = new byte[mBufferInfo.size];
+                            configbyte = outData;
+
+                            final MediaFormat format = encoder.getOutputFormat(); // API >= 16
+//                        ByteBuffer spsb = format.getByteBuffer("csd-0");
+//                        ByteBuffer ppsb = format.getByteBuffer("csd-1");
+
+                            ByteBuffer spsb = format.getByteBuffer("csd-0");
+                            byte[] sps = spsb.array();
+                            Log.e("", "=======csd-0   sps = " + Arrays.toString(sps));
+                            ByteBuffer ppsb = format.getByteBuffer("csd-1");
+                            byte[] pps = ppsb.array();
+                            Log.e("", "=======csd-1   pps = " + Arrays.toString(pps));
+
+                        } else if (mBufferInfo.flags == 1) {
+
+                            if (isFirst) {
+                                isFirst = false;
+                                writeHeadForBaidu(mBufferInfo.size + 12 + configbyte.length);
+                                Log.e("", "======flags0000");
+                                byte[] head = new byte[12];
+                                int cmd = 2;
+                                int time = 999;
+                                intToBytes(time, head, 4);
+                                intToBytes(cmd, head, 8);
+                                intToBytes(mBufferInfo.size + configbyte.length, head, 0);
+
+                                byte[] keyframe = new byte[mBufferInfo.size + 12 + configbyte.length];
+
+                                System.arraycopy(head, 0, keyframe, 0, head.length);
+                                System.arraycopy(configbyte, 0, keyframe, head.length, configbyte.length);
+                                System.arraycopy(outData, 0, keyframe, head.length + configbyte.length, outData.length);
+
+                                maxSizeWrite(outputStream, keyframe);
+                                outputStream.flush();
+                            } else {
+                                writeHeadForBaidu(mBufferInfo.size + 12);
+                                Log.e("", "======flags1111");
+                                byte[] head = new byte[12];
+                                int cmd = 2;
+                                int time = 999;
+                                intToBytes(time, head, 4);
+                                intToBytes(cmd, head, 8);
+                                intToBytes(mBufferInfo.size, head, 0);
+
+                                byte[] keyframe = new byte[mBufferInfo.size + 12];
+
+                                System.arraycopy(head, 0, keyframe, 0, head.length);
+                                System.arraycopy(outData, 0, keyframe, head.length, outData.length);
+
+                                maxSizeWrite(outputStream, keyframe);
+                                outputStream.flush();
+                            }
+
+
+//                            writeHeadForBaidu(mBufferInfo.size+8+configbyte.length);
+////                            Log.e("", "======flags1111");
+//                            byte[] head = new byte[8];
+//                            int cmd = 2;
+//                            intToBytes(cmd, head, 4);
+//                            intToBytes(mBufferInfo.size+configbyte.length, head, 0);
+//
+//                            byte[] keyframe = new byte[mBufferInfo.size+8+configbyte.length];
+//
+//                            System.arraycopy(head, 0, keyframe, 0, head.length);
+//                            System.arraycopy(configbyte, 0, keyframe, head.length, configbyte.length);
+//                            System.arraycopy(outData, 0, keyframe, head.length+configbyte.length, outData.length);
+//
+//                            maxSizeWrite(outputStream, keyframe);
+//                            outputStream.flush();
+
+
+                        } else {
+                            writeHeadForBaidu(mBufferInfo.size + 12);
+                            Log.e("", "======flags00000");
+                            byte[] head = new byte[12];
+                            int cmd = 2;
+                            int time = 999;
+                            intToBytes(time, head, 4);
+                            intToBytes(cmd, head, 8);
+                            intToBytes(mBufferInfo.size, head, 0);
+
+                            byte[] newframe = new byte[mBufferInfo.size + 12];
+                            System.arraycopy(head, 0, newframe, 0, head.length);
+                            System.arraycopy(outData, 0, newframe, head.length, outData.length);
+
+                            maxSizeWrite(outputStream, newframe);
+
+//                            maxSizeWrite(outputStream, outData);
+                            outputStream.flush();
+                        }
+
+                        encoder.releaseOutputBuffer(outputBufferIndex, false);
+
+                        //!!!!!!下面一行必须调用
+                        outputBufferIndex = encoder.dequeueOutputBuffer(mBufferInfo, 10000);
+                    }
+
+
+                } catch (Exception e) {
+
+                }
+
+
+            }
+
+        }
     }
 
 }

@@ -11,43 +11,47 @@ import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbEndpoint;
 import android.hardware.usb.UsbInterface;
 import android.hardware.usb.UsbManager;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.os.Build;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.IOException;
 import java.io.UnsupportedEncodingException;
+import java.nio.ByteBuffer;
 import java.text.MessageFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 /**
- *
- *                              |- - - - - - - - - |
- *                              | get usb device   |        (主动 or 被动)
- *                              |- - - - - - - - - |
- *
- *                                      |
- *                                      |
- *
- *                              |- - - - - - - - - |
- *                              |check permission  |        (普通连接申请是为了发送切换到aoa模式的指令)
- *                              |- - - - - - - - - |        (aoa模式申请是为了open、read、write等操作)
- *
- *                                /                \
- *                               /                  \
- *
- *          |- - - - - - - - - - - - - |            | - - - - - - - - - - - - - - - - - - - - - |
- *          |普通模式：发送51、52、53指令 |            |AOA模式：初始化connection和Endpoint(in/out)  |
- *          |- - - - - - - - - - - - - |            | - - - - - - - - - - - - - - - - - - - - - |
- *
- *
- *
- *
- *
- *
+ * |- - - - - - - - - |
+ * | get usb device   |        (主动 or 被动)
+ * |- - - - - - - - - |
+ * <p>
+ * |
+ * |
+ * <p>
+ * |- - - - - - - - - |
+ * |check permission  |        (普通连接申请是为了发送切换到aoa模式的指令)
+ * |- - - - - - - - - |        (aoa模式申请是为了open、read、write等操作)
+ * <p>
+ * /                \
+ * /                  \
+ * <p>
+ * |- - - - - - - - - - - - - |            | - - - - - - - - - - - - - - - - - - - - - |
+ * |普通模式：发送51、52、53指令 |            |AOA模式：初始化connection和Endpoint(in/out)  |
+ * |- - - - - - - - - - - - - |            | - - - - - - - - - - - - - - - - - - - - - |
  */
 
 public class MainActivity extends AppCompatActivity implements View.OnClickListener {
@@ -82,6 +86,8 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         filter.addAction(UsbManager.ACTION_USB_ACCESSORY_DETACHED);
         filter.addAction(REQUEST_PERMISSION_ACTION);
         registerReceiver(myUsbReceiver, filter);
+
+        initCodec();
     }
 
     private void init() {
@@ -95,12 +101,16 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         @Override
         public void onReceive(Context context, Intent intent) {
             mInfo.append("intent : " + intent.getAction() + "\n");
-
+            Log.e("", "========" + intent.getAction());
             String action = intent.getAction();
             if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
                 mCurDevice = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
                 mInfo.append("mCurDevice : " + mCurDevice.getDeviceName() + "\n");
                 mInfo.append("mCurDevice isAccessoryMode : " + isAccessoryMode() + "\n");
+                if (isAccessoryMode()) {
+                    Log.e("", "======isAccessoryMode==");
+                    mUsbManager.requestPermission(mCurDevice, pIntent);
+                }
 
             } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
                 mCurDevice = null;
@@ -138,9 +148,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             Toast.makeText(MainActivity.this, "mCurDevice is already is aoa mode ,u can send msg", Toast.LENGTH_SHORT).show();
             sendAccessoryInfo(mCurDevice);
         } else {
-            UsbDeviceConnection udc = mUsbManager.openDevice(mCurDevice);
+            mAoaDeviceConnection = mUsbManager.openDevice(mCurDevice);
             byte[] datas = new byte[2];
-            int ret = udc.controlTransfer(UsbConstants.USB_DIR_IN | UsbConstants.USB_TYPE_VENDOR, 51, 0, 0, datas, datas.length, 0);
+            int ret = mAoaDeviceConnection.controlTransfer(UsbConstants.USB_DIR_IN | UsbConstants.USB_TYPE_VENDOR, 51, 0, 0, datas, datas.length, 0);
             if (ret > 0) {
                 int version = datas[1] << 8 | datas[0];
                 mInfo.append(MessageFormat.format("aoa mode version  = {0}\n", version));
@@ -149,6 +159,153 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 Toast.makeText(MainActivity.this, "mCurDevice is not supoort aoa mode, return", Toast.LENGTH_SHORT).show();
             }
         }
+    }
+
+    private SurfaceView mView;
+
+    private MediaCodec codec;
+
+    //接收的视频帧队列
+    private volatile ArrayList<DataInfo> mFrmList = new ArrayList<>();
+
+    private void initCodec() {
+        mView = findViewById(R.id.surface);
+        mView.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                try {
+                    codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+                    MediaFormat mediaformat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 1280, 720);
+
+                    mediaformat.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+                    mediaformat.setInteger(MediaFormat.KEY_BIT_RATE, 5 * 1280 * 720);
+
+                    //设置帧率
+                    mediaformat.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
+                    codec.configure(mediaformat, holder.getSurface(), null, 0);
+                    codec.start();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+
+            }
+        });
+
+    }
+
+    private final AtomicBoolean keepThreadAlive = new AtomicBoolean(true);
+
+    private void startRecData() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+
+                int lengthToBeRender = 0;
+
+                byte buffToBeRender[] = new byte[720 * 1280 *5];
+                while (keepThreadAlive.get() ) {
+                    byte buff[] = new byte[720 * 1280 * 5];
+                    int bytesTransferred = mAoaDeviceConnection.bulkTransfer(mUsbEndpointIn, buff, buff.length, 100);
+                    Log.e("", "======>>> AoaSocketThread bytesTransferred " + bytesTransferred);
+                    if (bytesTransferred > 0) {
+                        Log.e("", "======>>> bytesTransferred =  " + bytesTransferred);
+                        if (bytesTransferred == 4 && "OVER".equals(new String(buff, 0, bytesTransferred))) {
+                            Log.e("", "======>>> OVER = lengthToBeRender =  " + lengthToBeRender);
+                            byte b[] = new byte[lengthToBeRender];
+                            System.arraycopy(buffToBeRender, 0, b, 0, lengthToBeRender);
+                            DataInfo da= new DataInfo();
+                            da.mDataBytes =b;
+                            da.receivedDataTime = System.currentTimeMillis();
+                            mFrmList.add(da);
+                            buff = null;
+                            buffToBeRender = new byte[720 * 1280 * 5];
+                            lengthToBeRender = 0;
+                            b = null;
+                        } else {
+                            Log.e("", "======>>> ADD  = lengthToBeRender =  " + lengthToBeRender);
+                            System.arraycopy(buff, 0, buffToBeRender, lengthToBeRender, bytesTransferred);
+                            lengthToBeRender = lengthToBeRender + bytesTransferred;
+                        }
+
+                    }
+                }
+            }
+        }).start();
+    }
+
+    private void startRender() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+
+                DataInfo dataInfo = null;
+                long startDecodeTime = System.currentTimeMillis();
+                int inIndex = -1;
+                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+                ByteBuffer byteBuffer = null;
+                while (keepThreadAlive.get()) {
+                    if (mFrmList.isEmpty()) {
+                        try {
+                            Thread.sleep(10);
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                        continue;
+                    }
+
+                    dataInfo = mFrmList.remove(0);
+                    int inputIndex = codec.dequeueInputBuffer(dataInfo.receivedDataTime);
+
+                    if (inputIndex >= 0) {
+                        //2 准备填充数据
+                        byteBuffer = codec.getInputBuffer(inIndex);
+
+
+                        byteBuffer.put(dataInfo.mDataBytes, 0, dataInfo.mDataBytes.length);
+                        if (byteBuffer == null) {
+                            continue;
+                        }
+                        //3 把数据传给解码器
+                        codec.queueInputBuffer(inIndex, 0, dataInfo.mDataBytes.length, 0, 0);
+
+                    } else {
+//                    SystemClock.sleep(17);
+                        continue;
+                    }
+
+                    int outIndex = MediaCodec.INFO_TRY_AGAIN_LATER;
+
+                    //4 开始解码
+                    try {
+                        outIndex = codec.dequeueOutputBuffer(info, 0);
+                        Log.i("", " ==============开始解码 : outIndex =  " + outIndex);
+                    } catch (IllegalStateException e) {
+                        e.printStackTrace();
+                        Log.e("", "IllegalStateException dequeueOutputBuffer " + e.getMessage());
+                    }
+                    if (outIndex >= 0) {
+                        codec.releaseOutputBuffer(outIndex, true);
+                    }
+                }
+
+            }
+        }).start();
+    }
+
+    class DataInfo {
+
+        public byte[] mDataBytes;
+        public long receivedDataTime;
+
     }
 
     public void sendAccessoryInfo(UsbDevice usbDevice) {
@@ -269,7 +426,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 connect();
                 break;
             case R.id.send:
-                sendMsg();
+
+                startRecData();
+                startRender();
                 break;
         }
 
